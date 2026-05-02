@@ -22,6 +22,7 @@
 - `reference_input_mode`
 - `reference_image_urls`
 - `reference_image_files`
+- `reference_image_dir`
 - `api_base_url`
 - `model`
 - `api_token`
@@ -42,10 +43,11 @@
       "https://example.com/ref-2.jpg"
     ],
     "reference_image_files": [],
+    "reference_image_dir": "",
     "api_base_url": "https://api.example.com/v1",
     "model": "gpt-image-1",
     "api_token": "sk-xxxx",
-    "image_size": "1024x1024",
+    "image_size": "auto",
     "group_rules": [
       {
         "group_id": "123456789",
@@ -63,10 +65,11 @@
 
 - `api_base_url`: `https://generativelanguage.googleapis.com/v1beta`
 - `reference_input_mode`: `local_file`
-- `reference_image_files`: 填插件运行机器上的图片绝对路径
+- `reference_image_dir`: 填插件运行机器上的参考图目录，Docker 环境填容器内目录
+- `image_size`: 建议用 `auto`
 
 插件会自动把 Google 官方地址规范成 `.../v1beta/openai`。
-Google 官方这条兼容链路不适合直接传远程参考图 URL，所以插件会强制改走本地参考图文件字节上传。
+Google 官方这条兼容链路不适合直接传远程参考图 URL，所以插件会强制改走本地参考图文件字节上传。启动日志里会打印扫描到的参考图目录和文件列表，方便你确认容器挂载有没有成功。
 
 示例：
 
@@ -78,18 +81,18 @@ Google 官方这条兼容链路不适合直接传远程参考图 URL，所以插
     "preset_prompt": "realistic phone selfie, natural skin texture, candid composition",
     "reference_input_mode": "local_file",
     "reference_image_urls": [],
-    "reference_image_files": [
-      "E:/selfie_refs/ref-1.png",
-      "E:/selfie_refs/ref-2.png"
-    ],
+    "reference_image_files": [],
+    "reference_image_dir": "/app/data/selfie_refs",
     "api_base_url": "https://generativelanguage.googleapis.com/v1beta",
     "model": "gemini-3.1-flash-image-preview",
     "api_token": "AIza...",
-    "image_size": "1024x1024",
+    "image_size": "auto",
     "group_rules": []
   }
 }
 ```
+
+如果你在 Docker 里运行插件，需要先把宿主机目录挂进容器，再在配置里填写容器内路径。例如把宿主机 `E:/selfie_refs` 挂到容器 `/app/data/selfie_refs`，那插件里就填 `/app/data/selfie_refs`。
 
 ## 触发方式
 

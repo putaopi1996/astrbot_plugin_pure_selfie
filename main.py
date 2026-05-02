@@ -33,6 +33,13 @@ class SendImageResult:
 
 class GiteeAIImagePlugin(Star):
     IMAGE_AS_FILE_THRESHOLD_BYTES: int = 20 * 1024 * 1024
+    REFERENCE_IMAGE_EXTENSIONS: tuple[str, ...] = (
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".gif",
+    )
 
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
@@ -48,14 +55,29 @@ class GiteeAIImagePlugin(Star):
     async def initialize(self):
         self.imgr = ImageManager(self.config, self.data_dir)
         conf = self._get_minimal_selfie_config()
-        ref_count = len(conf["reference_image_files"]) or len(conf["reference_image_urls"])
+        ref_count = len(conf["resolved_reference_images"]) or len(
+            conf["reference_image_urls"]
+        )
         logger.info(
-            "[GroupSelfieOnly] enabled=%s groups=%s refs=%s model=%s",
+            "[GroupSelfieOnly] enabled=%s groups=%s refs=%s model=%s image_size=%s",
             conf["enabled"],
             conf["enabled_groups"],
             ref_count,
             conf["model"] or "<empty>",
+            conf["image_size"],
         )
+        if conf["reference_image_dir"]:
+            logger.info(
+                "[GroupSelfieOnly] reference_image_dir=%s resolved=%s files=%s",
+                conf["reference_image_dir"],
+                len(conf["resolved_reference_images"]),
+                conf["resolved_reference_images"],
+            )
+        elif conf["resolved_reference_images"]:
+            logger.info(
+                "[GroupSelfieOnly] reference_image_files=%s",
+                conf["resolved_reference_images"],
+            )
 
     async def terminate(self):
         try:
@@ -113,6 +135,45 @@ class GiteeAIImagePlugin(Star):
             return False
         return (parts.hostname or "").lower() == "generativelanguage.googleapis.com"
 
+    @classmethod
+    def _scan_reference_image_dir(cls, directory: str) -> list[str]:
+        raw = str(directory or "").strip()
+        if not raw:
+            return []
+        path = Path(raw).expanduser()
+        if not path.exists() or not path.is_dir():
+            return []
+        return [
+            str(item)
+            for item in sorted(path.iterdir())
+            if item.is_file() and item.suffix.lower() in cls.REFERENCE_IMAGE_EXTENSIONS
+        ]
+
+    @staticmethod
+    def _normalize_minimal_selfie_image_size(value: Any) -> str:
+        text = str(value or "").strip().lower()
+        if not text or text == "auto":
+            return "auto"
+        return str(value).strip()
+
+    @staticmethod
+    def _resolve_minimal_selfie_size_arg(conf: dict[str, Any]) -> str | None:
+        value = str(conf.get("image_size", "auto") or "auto").strip().lower()
+        if value == "auto":
+            return None
+        resolved = str(conf.get("image_size", "") or "").strip()
+        return resolved or None
+
+    @classmethod
+    def _resolve_minimal_selfie_reference_images(
+        cls, reference_image_files: list[str], reference_image_dir: str
+    ) -> list[str]:
+        resolved = [str(item).strip() for item in reference_image_files if str(item).strip()]
+        for item in cls._scan_reference_image_dir(reference_image_dir):
+            if item not in resolved:
+                resolved.append(item)
+        return resolved
+
     def _get_minimal_selfie_config(self) -> dict[str, Any]:
         raw = self.config.get("minimal_selfie") or {}
         enabled_groups = [
@@ -135,6 +196,12 @@ class GiteeAIImagePlugin(Star):
             for item in raw.get("reference_image_files", []) or []
             if str(item).strip()
         ]
+        reference_image_dir = str(raw.get("reference_image_dir", "") or "").strip()
+        resolved_reference_images = self._resolve_minimal_selfie_reference_images(
+            reference_image_files,
+            reference_image_dir,
+        )
+
         group_rules: list[dict[str, Any]] = []
         for item in raw.get("group_rules", []) or []:
             if not isinstance(item, dict):
@@ -163,13 +230,16 @@ class GiteeAIImagePlugin(Star):
             "reference_input_mode": reference_input_mode,
             "reference_image_urls": reference_image_urls,
             "reference_image_files": reference_image_files,
+            "reference_image_dir": reference_image_dir,
+            "resolved_reference_images": resolved_reference_images,
             "api_base_url": self._normalize_minimal_selfie_api_base_url(
                 str(raw.get("api_base_url", "") or "").strip()
             ),
             "model": str(raw.get("model", "") or "").strip(),
             "api_token": str(raw.get("api_token", "") or "").strip(),
-            "image_size": str(raw.get("image_size", "1024x1024") or "").strip()
-            or "1024x1024",
+            "image_size": self._normalize_minimal_selfie_image_size(
+                raw.get("image_size", "auto")
+            ),
             "group_rules": group_rules,
         }
 
@@ -183,7 +253,7 @@ class GiteeAIImagePlugin(Star):
         self, conf: dict[str, Any]
     ) -> list[bytes]:
         images: list[bytes] = []
-        for item in conf.get("reference_image_files", []) or []:
+        for item in conf.get("resolved_reference_images", []) or []:
             path = Path(str(item).strip()).expanduser()
             if not path.exists() or not path.is_file():
                 raise RuntimeError(f"参考图文件不存在: {path}")
@@ -230,9 +300,9 @@ class GiteeAIImagePlugin(Star):
         if conf["reference_image_urls"]:
             refs = "\n".join(f"- {url}" for url in conf["reference_image_urls"])
             parts.append(f"Reference image URLs:\n{refs}")
-        elif conf["reference_image_files"]:
+        elif conf["resolved_reference_images"]:
             parts.append(
-                f"Reference image files are attached separately ({len(conf['reference_image_files'])} files)."
+                f"Reference image files are attached separately ({len(conf['resolved_reference_images'])} files)."
             )
         parts.append(
             "Return one finished selfie image only. No collage, no text overlay, no watermark."
@@ -427,7 +497,7 @@ class GiteeAIImagePlugin(Star):
             timeout=120,
             max_retries=1,
             default_model=conf["model"],
-            default_size=conf["image_size"],
+            default_size=self._resolve_minimal_selfie_size_arg(conf),
             supports_edit=True,
         )
         return self._minimal_selfie_backend
@@ -461,9 +531,10 @@ class GiteeAIImagePlugin(Star):
         if not conf["api_token"]:
             raise RuntimeError("未配置令牌")
 
+        size_arg = self._resolve_minimal_selfie_size_arg(conf)
         use_local_files = self._should_use_local_reference_files(conf)
         if use_local_files:
-            if not conf["reference_image_files"]:
+            if not conf["resolved_reference_images"]:
                 raise RuntimeError("当前接口需要配置本地参考图文件")
         elif not conf["reference_image_urls"]:
             raise RuntimeError("未配置参考图 URL")
@@ -477,7 +548,7 @@ class GiteeAIImagePlugin(Star):
                     prompt,
                     [],
                     model=conf["model"],
-                    size=conf["image_size"],
+                    size=size_arg,
                     input_image_urls=conf["reference_image_urls"],
                 )
             except Exception as exc:
@@ -507,7 +578,7 @@ class GiteeAIImagePlugin(Star):
                     prompt,
                     images,
                     model=conf["model"],
-                    size=conf["image_size"],
+                    size=size_arg,
                 )
             except Exception as exc:
                 last_error = exc

@@ -42,6 +42,12 @@
         "hint": "Google 官方 Gemini OpenAI 兼容接口请优先使用这一项，填写插件运行机器上的图片绝对路径。",
         "default": []
       },
+      "reference_image_dir": {
+        "type": "string",
+        "description": "参考图本地目录",
+        "hint": "可填写 Docker 容器内目录。插件启动时会自动扫描目录下的 png/jpg/jpeg/webp/gif 文件，并在日志里输出扫描结果。",
+        "default": ""
+      },
       "api_base_url": {
         "type": "string",
         "description": "接口地址",
@@ -62,12 +68,13 @@
         "type": "string",
         "description": "输出尺寸",
         "options": [
+          "auto",
           "1024x1024",
           "1536x1024",
           "1024x1536",
           "2048x2048"
         ],
-        "default": "1024x1024"
+        "default": "auto"
       },
       "group_rules": {
         "type": "template_list",

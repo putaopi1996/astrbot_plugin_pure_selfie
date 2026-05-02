@@ -199,6 +199,7 @@ class MinimalSelfieConfigTests(unittest.TestCase):
                         "E:/refs/a.jpg",
                         "E:/refs/b.jpg",
                     ],
+                    "reference_image_dir": "E:/refs",
                     "api_base_url": "https://api.example.com/v1",
                     "model": "gpt-image-1",
                     "api_token": "token-123",
@@ -227,6 +228,7 @@ class MinimalSelfieConfigTests(unittest.TestCase):
             conf["reference_image_files"],
             ["E:/refs/a.jpg", "E:/refs/b.jpg"],
         )
+        self.assertEqual(conf["reference_image_dir"], "E:/refs")
         self.assertEqual(conf["api_base_url"], "https://api.example.com/v1")
         self.assertEqual(conf["model"], "gpt-image-1")
         self.assertEqual(conf["api_token"], "token-123")
@@ -318,6 +320,7 @@ class MinimalSelfieRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     "reference_image_urls": [
                         "https://img.example.com/1.jpg",
                     ],
+                    "reference_image_dir": "",
                     "api_base_url": "https://generativelanguage.googleapis.com/v1beta",
                     "model": "gemini-3.1-flash-image-preview",
                     "api_token": "token-123",
@@ -354,6 +357,85 @@ class MinimalSelfieRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, Path("/tmp/chat-file-success.jpg"))
         self.assertEqual(chat_backend.images, [b"file-a", b"file-b"])
         self.assertNotIn("input_image_urls", chat_backend.kwargs)
+
+    async def test_generate_minimal_selfie_scans_reference_image_dir(self):
+        mod = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={
+                "minimal_selfie": {
+                    "enabled": True,
+                    "reference_input_mode": "local_file",
+                    "reference_image_files": [],
+                    "reference_image_dir": "",
+                    "api_base_url": "https://generativelanguage.googleapis.com/v1beta",
+                    "model": "gemini-3.1-flash-image-preview",
+                    "api_token": "token-123",
+                    "image_size": "1024x1024",
+                }
+            },
+        )
+        await plugin.initialize()
+
+        ref_dir = Path.cwd() / ".tmp-minimal-selfie-tests" / "ref-dir"
+        ref_dir.mkdir(parents=True, exist_ok=True)
+        (ref_dir / "a.png").write_bytes(b"dir-a")
+        (ref_dir / "b.jpg").write_bytes(b"dir-b")
+        (ref_dir / "note.txt").write_text("skip", encoding="utf-8")
+        plugin.config["minimal_selfie"]["reference_image_dir"] = str(ref_dir)
+
+        class _ChatFileBackend:
+            async def edit(self, prompt, images, **kwargs):
+                self.images = images
+                self.kwargs = kwargs
+                return Path("/tmp/chat-dir-success.jpg")
+
+        chat_backend = _ChatFileBackend()
+        plugin._minimal_selfie_chat_backend = chat_backend
+        mod.download_image = _download_should_not_run
+
+        result = await plugin._generate_minimal_selfie("mirror selfie")
+        conf = plugin._get_minimal_selfie_config()
+
+        self.assertEqual(result, Path("/tmp/chat-dir-success.jpg"))
+        self.assertEqual(chat_backend.images, [b"dir-a", b"dir-b"])
+        self.assertEqual(
+            conf["resolved_reference_images"],
+            [str(ref_dir / "a.png"), str(ref_dir / "b.jpg")],
+        )
+
+    async def test_generate_minimal_selfie_auto_size_omits_size_argument(self):
+        mod = _load_module()
+        plugin = mod.GiteeAIImagePlugin(
+            context=types.SimpleNamespace(),
+            config={
+                "minimal_selfie": {
+                    "enabled": True,
+                    "reference_image_urls": [
+                        "https://img.example.com/1.jpg",
+                    ],
+                    "api_base_url": "https://api.example.com/v1",
+                    "model": "nano-banana",
+                    "api_token": "token-123",
+                    "image_size": "auto",
+                }
+            },
+        )
+        await plugin.initialize()
+
+        class _ChatUrlBackend:
+            async def edit(self, prompt, images, **kwargs):
+                self.kwargs = kwargs
+                return Path("/tmp/chat-auto-size.jpg")
+
+        chat_backend = _ChatUrlBackend()
+        plugin._minimal_selfie_chat_backend = chat_backend
+        mod.download_image = _download_should_not_run
+
+        result = await plugin._generate_minimal_selfie("mirror selfie")
+
+        self.assertEqual(result, Path("/tmp/chat-auto-size.jpg"))
+        self.assertIsNone(chat_backend.kwargs["size"])
 
     async def test_generate_minimal_selfie_prefers_chat_url_input_before_downloading(self):
         mod = _load_module()
