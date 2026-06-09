@@ -50,30 +50,49 @@ class GiteeAIImagePlugin(Star):
     async def initialize(self):
         self.imgr = ImageManager(self.config, self.data_dir)
 
-        # Initialize UploadedRefsManager and sync reference images
+        # Initialize UploadedRefsManager
         self._refs_manager = UploadedRefsManager(Path(self.data_dir) / "uploaded_refs")
+
+        # Resolve reference image file paths from config
         reference_images = self.config.get("minimal_selfie", {}).get("reference_images", [])
         if not isinstance(reference_images, list):
             reference_images = []
-        # AstrBot WebUI saves file paths relative to its working directory (cwd),
-        # not the plugin's data_dir. Try multiple base directories.
-        search_dirs = [
-            Path.cwd(),                  # AstrBot working directory
-            Path(self.data_dir),         # plugin data directory
-            Path(self.data_dir).parent,  # parent (e.g. data/)
-        ]
-        logger.info(
-            "[PureSelfie] reference_images config: %s, data_dir=%s, cwd=%s",
-            reference_images,
-            self.data_dir,
-            Path.cwd(),
-        )
-        sync_result = self._refs_manager.sync(reference_images, search_dirs=search_dirs)
-        logger.info(
-            "[PureSelfie] refs synced: %d files, %d bytes total",
-            sync_result.total_files,
-            sync_result.total_bytes,
-        )
+
+        # AstrBot WebUI saves uploaded files to disk and stores relative paths in config.
+        # Resolve those paths relative to AstrBot's working directory (cwd).
+        self._resolved_ref_paths: list[Path] = []
+        search_dirs = [Path.cwd(), Path(self.data_dir), Path(self.data_dir).parent]
+        for entry in reference_images:
+            if isinstance(entry, str) and entry.strip():
+                file_path = Path(entry.strip())
+                if file_path.is_absolute():
+                    if file_path.exists() and file_path.is_file():
+                        self._resolved_ref_paths.append(file_path)
+                    else:
+                        logger.warning("[PureSelfie] reference image not found: %s", file_path)
+                else:
+                    found = False
+                    for base in search_dirs:
+                        candidate = base / entry.strip()
+                        if candidate.exists() and candidate.is_file():
+                            self._resolved_ref_paths.append(candidate)
+                            found = True
+                            break
+                    if not found:
+                        logger.warning("[PureSelfie] reference image not found: %s (searched: %s)", entry, [str(d) for d in search_dirs])
+            elif isinstance(entry, dict):
+                # base64 dict format - sync to uploaded_refs
+                pass  # handled by refs_manager sync below
+
+        # Also sync any base64 dict entries to uploaded_refs
+        dict_entries = [e for e in reference_images if isinstance(e, dict)]
+        if dict_entries:
+            sync_result = self._refs_manager.sync(dict_entries)
+            # Add synced files to resolved paths
+            for f in self._refs_manager.list_reference_files():
+                if f not in self._resolved_ref_paths:
+                    self._resolved_ref_paths.append(f)
+            logger.info("[PureSelfie] synced %d base64 entries", sync_result.persisted)
 
         # Detect legacy fields and log deprecation warning
         raw_minimal = self.config.get("minimal_selfie") or {}
@@ -89,11 +108,13 @@ class GiteeAIImagePlugin(Star):
             )
 
         conf = self._get_minimal_selfie_config()
+        total_bytes = sum(f.stat().st_size for f in self._resolved_ref_paths if f.exists())
         logger.info(
-            "[PureSelfie] enabled=%s groups=%s refs=%d model=%s image_size=%s",
+            "[PureSelfie] enabled=%s groups=%s refs=%d (%d bytes) model=%s image_size=%s",
             conf["enabled"],
             conf["enabled_groups"],
-            sync_result.total_files,
+            len(self._resolved_ref_paths),
+            total_bytes,
             conf["model"] or "<empty>",
             conf["image_size"],
         )
@@ -221,9 +242,15 @@ class GiteeAIImagePlugin(Star):
         }
 
     def _load_minimal_selfie_reference_file_bytes(self) -> list[bytes]:
-        if self._refs_manager is None:
-            raise RuntimeError("UploadedRefsManager is not initialized")
-        images = self._refs_manager.load_reference_bytes()
+        paths = getattr(self, "_resolved_ref_paths", [])
+        if not paths:
+            raise RuntimeError("\u672a\u914d\u7f6e\u53c2\u8003\u56fe\u6587\u4ef6")
+        images: list[bytes] = []
+        for p in paths:
+            if p.exists() and p.is_file():
+                data = p.read_bytes()
+                if data:
+                    images.append(data)
         if not images:
             raise RuntimeError("\u672a\u914d\u7f6e\u53c2\u8003\u56fe\u6587\u4ef6")
         return images
