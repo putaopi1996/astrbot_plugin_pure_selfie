@@ -81,37 +81,62 @@ class UploadedRefsManager:
 
         return filepath
 
-    def sync(self, config_entries: list[dict]) -> SyncResult:
+    def sync(self, config_entries: list, *, data_dir: Path | None = None) -> SyncResult:
         """Full sync: persist new entries from config, remove orphans.
 
-        Config entries format: [{"name": "...", "data": "<base64>", "type": "..."}]
+        Config entries can be:
+        - list of dicts: [{"name": "...", "data": "<base64>", "type": "..."}]
+        - list of strings: ["files/minimal_selfie/reference_images/img1.png", ...]
+          (relative paths resolved against data_dir)
+
         Only magic bytes are trusted for format detection.
         """
         result = SyncResult()
         valid_hashes: set[str] = set()
 
         for entry in config_entries:
-            # Skip non-dict entries (e.g. strings from legacy config or empty WebUI state)
-            if not isinstance(entry, dict):
+            data: bytes | None = None
+
+            if isinstance(entry, str):
+                # Entry is a file path (AstrBot WebUI saves uploaded files as relative paths)
+                file_path = Path(entry)
+                if not file_path.is_absolute() and data_dir:
+                    file_path = data_dir / entry
+                if not file_path.exists() or not file_path.is_file():
+                    result.errors += 1
+                    logger.warning("Sync: file not found: %s", file_path)
+                    continue
+                try:
+                    data = file_path.read_bytes()
+                except Exception as exc:
+                    result.errors += 1
+                    logger.warning("Sync: failed to read file %s: %s", file_path, exc)
+                    continue
+
+            elif isinstance(entry, dict):
+                # Entry is a base64-encoded dict from WebUI
+                raw_data = entry.get("data", "")
+                if not raw_data:
+                    result.errors += 1
+                    logger.warning("Sync: skipping entry with empty data (name=%s)", entry.get("name", "?"))
+                    continue
+                try:
+                    data = base64.b64decode(raw_data)
+                except Exception:
+                    result.errors += 1
+                    logger.warning(
+                        "Sync: base64 decode failed for entry (name=%s)",
+                        entry.get("name", "?"),
+                    )
+                    continue
+
+            else:
                 result.errors += 1
-                logger.warning("Sync: skipping non-dict entry: %s", type(entry).__name__)
+                logger.warning("Sync: skipping unsupported entry type: %s", type(entry).__name__)
                 continue
 
-            # Decode base64 data
-            raw_data = entry.get("data", "")
-            if not raw_data:
+            if not data:
                 result.errors += 1
-                logger.warning("Sync: skipping entry with empty data (name=%s)", entry.get("name", "?"))
-                continue
-
-            try:
-                data = base64.b64decode(raw_data)
-            except Exception:
-                result.errors += 1
-                logger.warning(
-                    "Sync: base64 decode failed for entry (name=%s)",
-                    entry.get("name", "?"),
-                )
                 continue
 
             # Size check
