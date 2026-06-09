@@ -38,7 +38,7 @@ class GiteeAIImagePlugin(Star):
     def __init__(self, context: Context, config: dict):
         super().__init__(context)
         self.config = config if isinstance(config, dict) else {}
-        self.data_dir = StarTools.get_data_dir("astrbot_plugin_gitee_aiimg")
+        self.data_dir = StarTools.get_data_dir("astrbot_plugin_pure_selfie")
         self.imgr: ImageManager | None = None
         self._refs_manager: UploadedRefsManager | None = None
         self._concurrency_lock = asyncio.Lock()
