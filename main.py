@@ -603,67 +603,75 @@ class GiteeAIImagePlugin(Star):
             return text
         return f"{text[: limit - 3].rstrip()}..."
 
-    @filter.regex(r".+", priority=-100)
-    async def minimal_selfie_group_message(self, event: AstrMessageEvent):
+    @filter.llm_tool(name="generate_selfie")
+    async def generate_selfie_tool(self, event: AstrMessageEvent, prompt: str = ""):
+        """Generate and send a selfie photo of yourself (the bot persona).
+        Call this tool ONLY when you decide to share a selfie with the user.
+        Do NOT call this if you want to refuse or change the topic.
+
+        Args:
+            prompt(string): Brief description of the selfie style/pose/scene. Can be empty for a default selfie.
+        """
+        import mcp.types
+
         if not self._is_minimal_selfie_mode():
-            return
-        if getattr(event, "is_private_chat", lambda: False)():
-            return
+            return mcp.types.CallToolResult(
+                content=[mcp.types.TextContent(type="text", text="Selfie feature is disabled.")]
+            )
 
         group_id = str(getattr(event, "get_group_id", lambda: "")() or "").strip()
-        if not self._is_group_enabled_for_minimal_selfie(group_id):
-            return
 
-        message_text = str(getattr(event, "message_str", "") or "").strip()
-        if not message_text or message_text.startswith(("/", "!", "\uff1f", ".", "\u3002", "\uff0c")):
-            return
-
-        # ignore_keywords check: skip entirely if message contains any keyword
-        conf = self._get_minimal_selfie_config()
-        ignore_kws = [kw.lower() for kw in conf.get("ignore_keywords", []) if kw.strip()]
-        if ignore_kws:
-            msg_lower = message_text.lower()
-            if any(kw in msg_lower for kw in ignore_kws):
-                return  # completely skip, don't stop_event, let other handlers process
-
-        should_generate, llm_prompt = await self._judge_minimal_selfie_request(message_text)
-        if not should_generate:
-            return
-
-        if not await self._try_reserve_minimal_selfie_group_quota(group_id):
-            reject_text = await self._generate_minimal_selfie_limit_reply(
-                group_id, message_text
+        # Check daily quota if applicable
+        if group_id and not await self._try_reserve_minimal_selfie_group_quota(group_id):
+            return mcp.types.CallToolResult(
+                content=[mcp.types.TextContent(
+                    type="text",
+                    text="Daily selfie quota reached for this group. Politely refuse in character."
+                )]
             )
-            yield event.plain_result(reject_text)
-            event.stop_event()
-            return
 
         user_id = str(event.get_sender_id() or "").strip()
         if not await self._begin_user_job(user_id):
-            await self._release_minimal_selfie_group_quota(group_id)
-            yield event.plain_result("\u4f60\u5f53\u524d\u8fd8\u6709\u4e00\u5f20\u81ea\u62cd\u4efb\u52a1\u5728\u5904\u7406\u4e2d\uff0c\u7a0d\u7b49\u4e00\u4e0b\u518d\u53d1\u3002")
-            event.stop_event()
-            return
+            return mcp.types.CallToolResult(
+                content=[mcp.types.TextContent(
+                    type="text",
+                    text="A selfie is already being generated. Please wait."
+                )]
+            )
 
         try:
             await mark_processing(event)
-            prompt = self._build_minimal_selfie_prompt(llm_prompt)
-            image_path = await self._generate_minimal_selfie(prompt)
+            selfie_prompt = self._build_minimal_selfie_prompt(prompt or "")
+            image_path = await self._generate_minimal_selfie(selfie_prompt)
             sent = await self._send_image_with_fallback(event, image_path)
             if sent:
                 await mark_success(event)
+                return mcp.types.CallToolResult(
+                    content=[mcp.types.TextContent(
+                        type="text",
+                        text="Selfie generated and sent successfully. Do not describe the image, just continue the conversation naturally."
+                    )]
+                )
             else:
-                await self._release_minimal_selfie_group_quota(group_id)
+                if group_id:
+                    await self._release_minimal_selfie_group_quota(group_id)
                 await mark_failed(event)
-                yield event.plain_result(
-                    f"\u56fe\u7247\u53d1\u9001\u5931\u8d25\uff1a{sent.reason or sent.last_error or 'unknown'}"
+                return mcp.types.CallToolResult(
+                    content=[mcp.types.TextContent(
+                        type="text",
+                        text="Selfie was generated but failed to send. Apologize briefly."
+                    )]
                 )
         except Exception as exc:
-            await self._release_minimal_selfie_group_quota(group_id)
+            if group_id:
+                await self._release_minimal_selfie_group_quota(group_id)
             await mark_failed(event)
-            yield event.plain_result(
-                f"\u81ea\u62cd\u751f\u6210\u5931\u8d25\uff1a{self._summarize_status_text(exc, fallback='unknown error')}"
+            logger.error("[PureSelfie] generate_selfie_tool failed: %s", exc)
+            return mcp.types.CallToolResult(
+                content=[mcp.types.TextContent(
+                    type="text",
+                    text=f"Selfie generation failed: {self._summarize_status_text(exc, fallback='unknown error')}. Apologize briefly."
+                )]
             )
         finally:
             await self._end_user_job(user_id)
-            event.stop_event()
