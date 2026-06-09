@@ -58,28 +58,19 @@ class GiteeAIImagePlugin(Star):
         if not isinstance(reference_images, list):
             reference_images = []
 
-        # AstrBot WebUI saves uploaded files to disk and stores relative paths in config.
-        # Resolve those paths relative to AstrBot's working directory (cwd).
+        # AstrBot WebUI saves uploaded files relative to the plugin's data_dir.
+        # e.g. "files/minimal_selfie/reference_images/img1.png" resolves to
+        # {data_dir}/files/minimal_selfie/reference_images/img1.png
         self._resolved_ref_paths: list[Path] = []
-        search_dirs = [Path.cwd(), Path(self.data_dir), Path(self.data_dir).parent]
+        data_dir_path = Path(self.data_dir)
         for entry in reference_images:
             if isinstance(entry, str) and entry.strip():
-                file_path = Path(entry.strip())
-                if file_path.is_absolute():
-                    if file_path.exists() and file_path.is_file():
-                        self._resolved_ref_paths.append(file_path)
-                    else:
-                        logger.warning("[PureSelfie] reference image not found: %s", file_path)
+                rel = entry.strip().replace("\\", "/").lstrip("/")
+                file_path = (data_dir_path / rel).resolve(strict=False)
+                if file_path.exists() and file_path.is_file():
+                    self._resolved_ref_paths.append(file_path)
                 else:
-                    found = False
-                    for base in search_dirs:
-                        candidate = base / entry.strip()
-                        if candidate.exists() and candidate.is_file():
-                            self._resolved_ref_paths.append(candidate)
-                            found = True
-                            break
-                    if not found:
-                        logger.warning("[PureSelfie] reference image not found: %s (searched: %s)", entry, [str(d) for d in search_dirs])
+                    logger.warning("[PureSelfie] reference image not found: %s (resolved: %s)", entry, file_path)
             elif isinstance(entry, dict):
                 # base64 dict format - sync to uploaded_refs
                 pass  # handled by refs_manager sync below
