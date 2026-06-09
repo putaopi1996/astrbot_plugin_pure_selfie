@@ -582,7 +582,7 @@ class GiteeAIImagePlugin(Star):
             logger.warning("[PureSelfie] image send failed, fallback to file: %s", exc)
         try:
             if path.exists() and path.stat().st_size <= self.IMAGE_AS_FILE_THRESHOLD_BYTES:
-                await event.send(event.chain_result([File.fromFileSystem(str(path))]))
+                await event.send(event.chain_result([File(name=path.name, file=str(path))]))
                 return SendImageResult(ok=True, reason="file_fallback")
         except Exception as exc:
             last_error = str(exc)
